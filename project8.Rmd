@@ -1,0 +1,190 @@
+---
+title: "Manner predication based on various exercise."
+author: "wangchun zhang"
+date: "May 10, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##  Objective
+Build a predict model to predict the manner (categorized by using "classe") of various excercises activities. 
+
++ Data source: 
+  Training data: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv. Testing data:  https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+if(!require("caret")) install.packages("caret"); library(caret)
+if(!require("randomForest")) install.packages("randomForest"); library(randomForest)
+```
+
+## Import data, data cleansing and exploratory analysis
+### Import data
+```{r}
+training<-read.csv("pml-training.csv")
+testing<-read.csv("pml-testing.csv")
+dim(training);dim(testing)
+set.seed(16833)
+```
+
+### Data cleaning & Exploratory
+the dataset has 160 variables altogether, variables selection is needed
+
+##### 1 Remove independent variables with NA values
+```{r}
+missing<-unlist(lapply(training, function(x) if(sum(is.na(x))>0) sum(is.na(x))))
+missingNames<-names(missing)
+training<-training[,!(colnames(training) %in% missingNames)]
+testing<-testing[,!(colnames(testing) %in% missingNames)]
+```
+
++ All independent variables above miss 19216 out of 19622 row data. We can safely remove all.
+
+##### 2 Remove categorical independent variables 
+```{r warning=FALSE, results='hide'}
+factors<-training[,sapply(training,is.factor)]
+xFactors<-factors[,-which(names(factors) == "classe")]
+summary(xFactors)
+```
+
++ From above summary result: Most have more than 200 levels and bad value " #DIV/0!" or empty data, or not related to model requirement ("user_name", "cvtd_timestamp"), remove all of them.
+
+```{r}
+training<-training[,!(colnames(training) %in% names(xFactors))]
+testing<-testing[,!(colnames(testing) %in% names(xFactors))]
+rm(xFactors)
+```
+
+##### 3 Select variable for projects
+Project requires "data to be used is from accelerometers on the belt, forearm, arm, and dumbell of 6 participants", we select them by using following code.
+
+```{r warning=FALSE, results='hide'}
+## select data
+trnames<-c("classe",
+           names(training[,grepl("_belt", names(training))]),
+           names(training[,grepl("_arm", names(training))]),
+           names(training[,grepl("_forearm", names(training))]),
+           names(training[,grepl("_dumbbel", names(training))]))
+training<-training[,(colnames(training) %in% trnames)]
+testing<-testing[,(colnames(testing) %in% trnames)]
+names(training) <- make.names(names(training))
+names(testing) <- make.names(names(testing))
+```
+
+
+
+## Model fitting
+### 1 Cut 30% training data as validation data
+Training set has 19622 rows of sample, going to split it into 70/30 training/cv/testing. At the same time, I will generate a small sample set around size=20 for testing curiosity.
+
+Code is as follows:
+```{r message=FALSE, warning=FALSE, results='hide'}
+inTrain<-createDataPartition(y=training$classe, p=0.7, list=FALSE)
+traindata<-training[inTrain,]
+vData<-training[-inTrain,]
+
+strain<-createDataPartition(y=vData$classe, p=0.0033, list=FALSE)
+sampleData<-vData[strain,]
+validationData<-vData[-strain,]
+```
+
+### 2 Model fit Comparison
+I am going to use different models, and try to compare them by using confusionMatrix, expecially by accuracy.
+
++ Notes: My machine can't run on almost all following models, it takes forever, so I don't choose the "train()" method in caret package.
+
+#### 1) Using Random Forest
+
+```{r message=FALSE, warning=FALSE, results='hide'}
+library(randomForest)
+rf.fit <- randomForest(classe ~., data=traindata, na.action=na.exclude)
+rf.pred<- predict(rf.fit,validationData)
+cm<-confusionMatrix(rf.pred, validationData$classe)
+cm$overall['Accuracy']
+```
+
+#### 2) Using multi-class logistic regression
+```{r message=FALSE, warning=FALSE}
+if(!require("nnet")) install.packages("nnet"); library("nnet")
+
+log.fit <- multinom(classe ~ ., traindata)
+log.pred<- predict(log.fit,validationData)
+cm<-confusionMatrix(log.pred, validationData$classe)
+cm$overall['Accuracy']
+```
+
+### 3) Use SVM 
+```{r message=FALSE, warning=FALSE, results='hide'}
+library( 'e1071' )
+svm.fit <- svm( classe~., traindata)
+svm.pred <- predict( svm.fit, newdata=validationData )
+cm<-confusionMatrix(log.pred, validationData$classe)
+cm$overall['Accuracy']
+```
+
+### 3) Use Gradient Boosting 
+```{r message=FALSE, warning=FALSE, results='hide'}
+library(gbm)
+gbm.fit<-gbm(classe~., data=traindata, distribution = "multinomial")
+gbm.pred <- predict( gbm.fit, newdata=validationData, n.trees = 100)
+gbm.pred <-attributes(gbm.pred)$dimnames[[2]][apply(gbm.pred, 1, which.max)]
+cm<-confusionMatrix(gbm.pred, validationData$classe)
+cm$overall['Accuracy']
+```
+
+### 4) Use Discriminant analysis 
+```{r message=FALSE, warning=FALSE, results='hide'}
+lda.fit<-train(classe~., data=traindata, method="lda")
+svm.pred <- predict( lda.fit, newdata=validationData )
+cm<-confusionMatrix(log.pred, validationData$classe)
+cm$overall['Accuracy']
+```
+
+### 5) Use glmnet
+```{r message=FALSE, warning=FALSE, results='hide'}
+library(glmnet)
+glm.fit <-glmnet(x = data.matrix(traindata[c(1:52)]), y = data.matrix(traindata[53]), alpha = 1, family="multinomial") 
+glm.pred <- predict(glm.fit, newx=data.matrix(validationData[c(1:52)]), type="class", s=c(1.723e-05,5.641e-02))
+glm.pred[glm.pred == 1]<-"A"
+glm.pred[glm.pred == 2]<-"B"
+glm.pred[glm.pred == 3]<-"C"
+glm.pred[glm.pred == 4]<-"D"
+glm.pred[glm.pred == 5]<-"E"
+
+cm1<-confusionMatrix(glm.pred[,1], validationData$classe)
+cm1$overall['Accuracy']
+```
+
+
+### 3 Model selection & Conclusion
+Based on accuracy result comparison, It indicates 
+
++ The model is more non-linear classifier
++ Random forest model seems the best model fit
+
+Plots:
+```{r}
+plot(rf.fit)
+varImpPlot(rf.fit)
+```
+
+#### 1) Test the small sample
+```{r}
+sample.pred<- predict(rf.fit, sampleData)
+sample<-confusionMatrix(sample.pred, sampleData$classe)
+```
+
+The validation on the small sample (of size 22) has accuracy of 
+```{r}
+sample$overall['Accuracy']
+```
+
+So it is very possible that the prediction result on testing data will similiar close to 100%
+
+### 2) The predict result on testing data: 
+
+```{r}
+pred<- predict(rf.fit,testing)
+print(paste(c(1:length(pred)), ": ", pred))
+```
